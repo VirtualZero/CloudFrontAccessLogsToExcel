@@ -240,7 +240,7 @@ def parse_args():
     parser.add_argument(
         '-l',
         '--delete-local',
-        help=f'deletes all downloaded CloudFront access logs and directory.',
+        help=f'Deletes all downloaded CloudFront access logs and directory.',
         action='store_true'
     )
 
