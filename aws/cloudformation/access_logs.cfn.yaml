@@ -1,0 +1,196 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFront access log parser and Excel spreadsheet generator.'
+
+Parameters:
+  FunctionBucket:
+    Type: String
+
+  FunctionKey:
+    Type: String
+
+  FunctionVersionId:
+    Type: String
+
+  LogBucket:
+    Type: String
+
+  LogBucketPrefix:
+    Type: String
+
+  DestBucket:
+    Type: String
+
+  DestBucketPrefix:
+    Type: String
+
+  CronExpression:
+    Type: String
+    Default: '0 0 ? * 1 *'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Function Configuration
+        Parameters:
+          - FunctionBucket
+          - FunctionKey
+          - FunctionVersionId
+          - LogBucket
+          - LogBucketPrefix
+          - DestBucket
+          - DestBucketPrefix
+
+      - Label:
+          default: Schedule Configuration
+        Parameters:
+          - CronExpression
+
+    ParameterLabels:
+      CronExpression:
+        default: 'Enter the cron expression to schedule invokations:'
+      LogBucket:
+        default: 'Enter the name of the S3 bucket containing the CloudFront access logs:'
+      LogBucketPrefix:
+        default: 'Enter the S3 key prefix of the CloudFront access log files:'
+      DestBucket:
+        default: 'Enter the the name of the S3 bucket that will store the generated Excel files:'
+      DestBucketPrefix:
+        default: 'Enter the S3 key prefix of the generated Excel files:'
+      FunctionBucket:
+        default: 'Enter the name of the bucket containing the Lambda function:'
+      FunctionKey:
+        default: 'Enter the S3 key of the Lambda function:'
+      FunctionVersionId:
+        default: 'Enter the S3 version ID of the Lambda function:'
+
+Resources:
+  RolePolicy: 
+    Type: AWS::IAM::ManagedPolicy 
+    Properties: 
+      ManagedPolicyName: 'CfAccessLogsToExcelPolicy' 
+      Description: 'Allows Lambda function to access S3 resources'
+      Path: / 
+      PolicyDocument: 
+        Version: 2012-10-17 
+        Statement: 
+        - Sid: S3List
+          Effect: Allow 
+          Action: 's3:ListBucket'
+          Resource: !Sub 'arn:aws:s3:::${LogBucket}'
+
+        - Sid: S3GetDelete
+          Effect: Allow 
+          Action: 
+          - 's3:GetObject'
+          - 's3:DeleteObject'
+          Resource: !Sub 'arn:aws:s3:::${LogBucket}/${LogBucketPrefix}/*'
+
+        - Sid: S3Put
+          Effect: Allow 
+          Action: 's3:PutObject'
+          Resource: !Sub 'arn:aws:s3:::${DestBucket}/${DestBucketPrefix}/*'
+
+        - Sid: AllowLogging
+          Effect: Allow 
+          Action:  
+          - 'logs:CreateLogGroup' 
+          - 'logs:CreateLogStream' 
+          - 'logs:PutLogEvents' 
+          Resource: '*' 
+  
+  LambdaRole:
+    Type: AWS::IAM::Role
+    DependsOn: RolePolicy
+    Properties: 
+      RoleName: 'CfAccessLogsToExcelRole'
+      Description: 'Allows Lambda to access S3 resources'
+      MaxSessionDuration: 3600
+      Path: /
+      ManagedPolicyArns: 
+        - !Ref RolePolicy
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Action: sts:AssumeRole
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+
+  LambdaFunction: 
+    Type: AWS::Lambda::Function 
+    Properties: 
+      FunctionName: 'CfAccessLogsToExcelFunction' 
+      Code: 
+        S3Bucket: !Ref FunctionBucket
+        S3Key: !Ref FunctionKey
+        S3ObjectVersion: !Ref FunctionVersionId
+      Runtime: python3.7 
+      Handler: app.lambda_handler
+      MemorySize: 192
+      Timeout: 300
+      Role: !GetAtt LambdaRole.Arn
+      Environment:
+        Variables:
+          LOG_BUCKET: !Ref LogBucket
+          LOG_PREFIX: !Ref LogBucketPrefix
+          DESTINATION_BUCKET: !Ref DestBucket
+          DESTINATION_PREFIX: !Ref DestBucketPrefix
+      Tags: 
+      - Key: Name 
+        Value: CloudFrontToExcel
+      - Key: Region 
+        Value: !Ref AWS::Region
+
+  CloudWatchRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: 'CloudWatch Rule to invoke the Lambda function'
+      Name: 'CfAccessLogsToExcelRule'
+      ScheduleExpression: !Sub 'cron(${CronExpression})'
+      State: ENABLED
+      Targets:
+      - Arn: !GetAtt LambdaFunction.Arn
+        Id: 'CfAccessLogsToExcelRuleTarget'
+
+  LambdaRulePermission:
+    Type: "AWS::Lambda::Permission"
+    DependsOn: CloudWatchRule
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      Principal: events.amazonaws.com
+      FunctionName: !GetAtt LambdaFunction.Arn
+      SourceArn: !Sub 'arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudWatchRule}'
+
+Outputs:
+  CronExpression:
+    Description: 'Cron expression to schedule function invokations'
+    Value: !Ref CronExpression
+    Export:
+      Name: 'CfAccessLogsToExcelCron'
+
+  LambdaRoleArn:
+    Description: Lambda Role ARN
+    Value: !GetAtt LambdaRole.Arn
+    Export:
+      Name: CfAccessLogsToExcelLambdaRoleArn
+
+  LambdaPolicyArn:
+    Description: Lambda Managed Policy ARN
+    Value: !Ref RolePolicy
+    Export:
+      Name: CfAccessLogsToExcelLambdaPolicyArn
+
+  LambdaFunctionArn:
+    Description: Lambda Function ARN
+    Value: !GetAtt LambdaFunction.Arn
+    Export:
+      Name: CfAccessLogsToExcelFunctionArn
+
+  CloudWatchRuleArn:
+    Description: Cloudwatch Rule ARN
+    Value: !GetAtt CloudWatchRule.Arn
+    Export:
+      Name: CfAccessLogsToExcelRuleArn
